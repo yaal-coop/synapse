@@ -39,6 +39,14 @@ from synapse.http.servlet import (
 from synapse.http.site import SynapseRequest
 from synapse.rest.admin._base import assert_requester_is_admin, assert_user_is_admin
 from synapse.types import JsonDict, UserID
+from scim2_models import Error
+from scim2_models import User
+from scim2_models import Photo
+from scim2_models import Context
+from scim2_models import ListResponse
+from scim2_models import Email
+from scim2_models import PhoneNumber
+from scim2_models import Meta
 
 from .scim_constants import (
     RESOURCE_TYPE_USER,
@@ -112,11 +120,10 @@ class SCIMServlet(RestServlet):
         }
 
     def make_error_response(self, status, message):
-        return status, {
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
-            "status": status.value if isinstance(status, HTTPStatus) else status,
-            "detail": message,
-        }
+        return status, Error(
+            status=status.value if isinstance(status, HTTPStatus) else status,
+            detail=message,
+        ).model_dump()
 
     def parse_pagination_params(self, request):
         start_index = parse_integer(request, "startIndex", default=1, negative=True)
@@ -140,7 +147,7 @@ class SCIMServlet(RestServlet):
 
         return start_index, count
 
-    async def get_user_data(self, user_id: str):
+    async def get_scim_user(self, user_id: str):
         user_id_obj = UserID.from_string(user_id)
         user = await self.store.get_user_by_id(user_id)
         profile = await self.store.get_profileinfo(user_id_obj)
@@ -158,42 +165,41 @@ class SCIMServlet(RestServlet):
                 "Only local users can be admins of this homeserver",
             )
 
-        location = f"{self.config.server.public_baseurl}{SCIM_PREFIX}/Users/{user_id}"
         creation_datetime = datetime.datetime.fromtimestamp(user.creation_ts)
-        payload = {
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
-            "meta": {
-                "resourceType": "User",
-                "created": creation_datetime.isoformat(),
-                "lastModified": creation_datetime.isoformat(),
-                "location": location,
-            },
-            "id": user_id,
-            "externalId": user_id,
-            "userName": user_id_obj.localpart,
-            "active": not user.is_deactivated,
-        }
-
-        for threepid in threepids:
-            if threepid.medium == "email":
-                payload.setdefault("emails", []).append({"value": threepid.address})
-
-            if threepid.medium == "msisdn":
-                payload.setdefault("phoneNumbers", []).append(
-                    {"value": threepid.address}
-                )
-
-        if profile.display_name:
-            payload["displayName"] = profile.display_name
+        scim_user = User(
+            meta=Meta(
+                resource_type="User",
+                created=creation_datetime,
+                last_modified=creation_datetime,
+                location=f"{self.config.server.public_baseurl}{SCIM_PREFIX}/Users/{user_id}",
+            ),
+            id=user_id,
+            external_id=user_id,
+            user_name=user_id_obj.localpart,
+            display_name=profile.display_name,
+            active=not user.is_deactivated,
+            emails=[
+                Email(value=threepid.address)
+                for threepid in threepids
+                if threepid.medium == "email"
+            ],
+            phone_numbers=[
+                PhoneNumber(value=threepid.address)
+                for threepid in threepids
+                if threepid.medium == "msisdn"
+            ],
+        )
 
         if profile.avatar_url:
-            payload["photos"] = [{
-                "type": "photo",
-                "primary": True,
-                "value": profile.avatar_url,
-            }]
+            scim_user.photos = [
+                Photo(
+                    type=Photo.Type.photo,
+                    primary=True,
+                    value=profile.avatar_url,
+                )
+            ]
 
-        return payload
+        return scim_user
 
 
 class UserServlet(SCIMServlet):
@@ -204,7 +210,8 @@ class UserServlet(SCIMServlet):
     ) -> Tuple[int, JsonDict]:
         await assert_requester_is_admin(self.auth, request)
         try:
-            payload = await self.get_user_data(user_id)
+            user = await self.get_scim_user(user_id)
+            payload = user.model_dump(scim_ctx=Context.RESOURCE_QUERY_RESPONSE)
             return HTTPStatus.OK, payload
         except SynapseError as exc:
             return self.make_error_response(exc.code, exc.msg)
@@ -286,7 +293,8 @@ class UserServlet(SCIMServlet):
                         user_id, medium, address, current_time
                     )
 
-            payload = await self.get_user_data(user_id)
+            user = await self.get_scim_user(user_id)
+            payload = user.model_dump(scim_ctx=Context.RESOURCE_REPLACEMENT_RESPONSE)
             return HTTPStatus.OK, payload
 
         except SynapseError as exc:
@@ -305,10 +313,14 @@ class UserListServlet(SCIMServlet):
                 start=start_index - 1,
                 limit=count,
             )
-            users = [await self.get_user_data(item.name) for item in items]
-            payload = self.make_list_response_payload(
-                users, start_index=start_index, count=count, total_results=total
+            users = [await self.get_scim_user(item.name) for item in items]
+            list_response = ListResponse[User](
+                start_index=start_index,
+                count=count,
+                total_results=total,
+                resources=users,
             )
+            payload = list_response.model_dump(scim_ctx=Context.RESOURCE_QUERY_RESPONSE)
             return HTTPStatus.OK, payload
 
         except SynapseError as exc:
@@ -366,7 +378,8 @@ class UserListServlet(SCIMServlet):
                     UserID.from_string(user_id), requester, avatar_url, True
                 )
 
-            payload = await self.get_user_data(user_id)
+            user = await self.get_scim_user(user_id)
+            payload = user.model_dump(scim_ctx=Context.RESOURCE_CREATION_RESPONSE)
             return HTTPStatus.CREATED, payload
 
         except SynapseError as exc:
@@ -384,6 +397,11 @@ class SchemaListServlet(SCIMServlet):
     PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/Schemas$")]
 
     async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
+        """Return the list of schemas provided by the synapse SCIM implementation.
+
+        Could be automated when this is implemented:
+        https://github.com/yaal-coop/scim2-models/issues/7"""
+
         start_index, count = self.parse_pagination_params(request)
         resources = [
             self.absolute_meta_location(SCHEMA_SERVICE_PROVIDER_CONFIG),
