@@ -314,9 +314,9 @@ class UserListServlet(SCIMServlet):
                 limit=count,
             )
             users = [await self.get_scim_user(item.name) for item in items]
-            list_response = ListResponse[User](
+            list_response = ListResponse.of(User)(
                 start_index=start_index,
-                count=count,
+                items_per_page=count,
                 total_results=total,
                 resources=users,
             )

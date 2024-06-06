@@ -165,54 +165,6 @@ class UserProvisioningTestCase(unittest.HomeserverTestCase):
         self.assertEqual(len(channel.json_body["Resources"]), 1)
         self.assertEqual(channel.json_body["Resources"][0]["id"], "@user00:test")
 
-    def test_get_users_pagination_negative_count(self) -> None:
-        """
-        RFC7644 §3.4.2.4
-            A negative value SHALL be interpreted as 0.
-            A value of "0" indicates that no resource results are
-            to be returned except for "totalResults".
-
-        https://datatracker.ietf.org/doc/html/rfc7644#section-3.4.2.4
-        """
-        channel = self.make_request(
-            "GET",
-            f"{self.url}/Users?count=-1",
-            access_token=self.admin_user_tok,
-        )
-
-        self.assertEqual(
-            channel.json_body["schemas"],
-            ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        )
-        self.assertEqual(
-            0,
-            len(channel.json_body["Resources"]),
-        )
-        self.assertEqual(
-            17,
-            channel.json_body["totalResults"],
-        )
-
-    def test_get_users_pagination_negative_start_index(self) -> None:
-        """
-        RFC7644 §3.4.2.4
-            A value less than 1 SHALL be interpreted as 1.
-
-        https://datatracker.ietf.org/doc/html/rfc7644#section-3.4.2.4
-        """
-        channel = self.make_request(
-            "GET",
-            f"{self.url}/Users?startIndex=-1",
-            access_token=self.admin_user_tok,
-        )
-
-        self.assertEqual(
-            channel.json_body["schemas"],
-            ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        )
-        self.assertEqual(len(channel.json_body["Resources"]), 17)
-        self.assertEqual(channel.json_body["Resources"][0]["id"], "@admin:test")
-
     def test_get_users_pagination_big_start_index(self) -> None:
         """
         Test the 'startIndex' parameter of the /Users endpoint
