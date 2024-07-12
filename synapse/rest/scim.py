@@ -27,7 +27,7 @@ import datetime
 import logging
 import re
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Dict, Tuple
 
 from synapse.api.errors import SynapseError
 from synapse.http.server import HttpServer, JsonResource
@@ -42,20 +42,23 @@ from synapse.types import JsonDict, UserID
 from scim2_models import Error
 from scim2_models import User
 from scim2_models import Photo
+from scim2_models import AuthenticationScheme
 from scim2_models import Context
 from scim2_models import ListResponse
 from scim2_models import Email
 from scim2_models import PhoneNumber
 from scim2_models import Meta
+from scim2_models import ServiceProviderConfig
+from scim2_models import SearchRequest
+from scim2_models import ResourceType
+from scim2_models import Schema
+from scim2_models import ETag
+from scim2_models import Filter
+from scim2_models import Sort
+from scim2_models import Patch
+from scim2_models import Bulk
+from scim2_models import ChangePassword
 
-from .scim_constants import (
-    RESOURCE_TYPE_USER,
-    SCHEMA_RESOURCE_TYPE,
-    SCHEMA_SCHEMA,
-    SCHEMA_SERVICE_PROVIDER_CONFIG,
-    SCHEMA_USER,
-    SCIM_SERVICE_PROVIDER_CONFIG,
-)
 
 if TYPE_CHECKING:
     from synapse.server import HomeServer
@@ -125,27 +128,13 @@ class SCIMServlet(RestServlet):
             detail=message,
         ).model_dump()
 
-    def parse_pagination_params(self, request):
-        start_index = parse_integer(request, "startIndex", default=1, negative=True)
-        count = parse_integer(
-            request, "count", default=self.default_nb_items_per_page, negative=True
+    def parse_search_request(self, request):
+        return SearchRequest(
+            start_index=parse_integer(request, "startIndex", default=1, negative=True),
+            count=parse_integer(
+                request, "count", default=self.default_nb_items_per_page, negative=True
+            ),
         )
-
-        # RFC7644 §3.4.2.4
-        #    A value less than 1 SHALL be interpreted as 1.
-        #
-        # https://datatracker.ietf.org/doc/html/rfc7644#section-3.4.2.4
-        if start_index < 1:
-            start_index = 1
-
-        # RFC7644 §3.4.2.4
-        #    A negative value SHALL be interpreted as 0.
-        #
-        # https://datatracker.ietf.org/doc/html/rfc7644#section-3.4.2.4
-        if count < 0:
-            count = 0
-
-        return start_index, count
 
     async def get_scim_user(self, user_id: str):
         user_id_obj = UserID.from_string(user_id)
@@ -307,16 +296,16 @@ class UserListServlet(SCIMServlet):
     async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
         try:
             await assert_requester_is_admin(self.auth, request)
-            start_index, count = self.parse_pagination_params(request)
+            req = self.parse_search_request(request)
 
             items, total = await self.store.get_users_paginate(
-                start=start_index - 1,
-                limit=count,
+                start=req.start_index - 1,
+                limit=req.count,
             )
             users = [await self.get_scim_user(item.name) for item in items]
             list_response = ListResponse.of(User)(
-                start_index=start_index,
-                items_per_page=count,
+                start_index=req.start_index,
+                items_per_page=req.count,
                 total_results=total,
                 resources=users,
             )
@@ -390,71 +379,159 @@ class ServiceProviderConfigServlet(SCIMServlet):
     PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/ServiceProviderConfig$")]
 
     async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
-        return HTTPStatus.OK, SCIM_SERVICE_PROVIDER_CONFIG
+        spc = ServiceProviderConfig(
+            meta=Meta(
+                resource_type="ServiceProviderConfig",
+                location=(
+                    self.config.server.public_baseurl
+                    + SCIM_PREFIX
+                    + "/ServiceProviderConfig"
+                ),
+            ),
+            documentation_uri="https://element-hq.github.io/synapse/latest/admin_api/scim_api.html",
+            patch=Patch(supported=False),
+            bulk=Bulk(supported=False, maxOperations=0, maxPayloadSize=0),
+            changePassword=ChangePassword(supported=True),
+            filter=Filter(supported=False, maxResults=0),
+            sort=Sort(supported=False),
+            etag=ETag(supported=False),
+            authenticationSchemes=[
+                AuthenticationScheme(
+                    name="OAuth Bearer Token",
+                    description="Authentication scheme using the OAuth Bearer Token Standard",
+                    specUri="http://www.rfc-editor.org/info/rfc6750",
+                    documentationUri="https://element-hq.github.io/synapse/latest/openid.html",
+                    type="oauthbearertoken",
+                    primary=True,
+                ),
+                AuthenticationScheme(
+                    name="HTTP Basic",
+                    description="Authentication scheme using the HTTP Basic Standard",
+                    specUri="http://www.rfc-editor.org/info/rfc2617",
+                    documentationUri="https://element-hq.github.io/synapse/latest/modules/password_auth_provider_callbacks.html",
+                    type="httpbasic",
+                ),
+            ],
+        )
+        return HTTPStatus.OK, spc.model_dump(scim_ctx=Context.RESOURCE_QUERY_RESPONSE)
 
 
-class SchemaListServlet(SCIMServlet):
+class BaseSchemaServlet(SCIMServlet):
+    schemas: Dict[str, Schema]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.schemas = {
+            "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig": ServiceProviderConfig.to_schema(),
+            "urn:ietf:params:scim:schemas:core:2.0:ResourceType": ResourceType.to_schema(),
+            "urn:ietf:params:scim:schemas:core:2.0:Schema": Schema.to_schema(),
+            "urn:ietf:params:scim:schemas:core:2.0:User": User.to_schema(),
+        }
+        for schema_id, schema in self.schemas.items():
+            schema_name = schema_id.split(":")[-1]
+            schema.meta = Meta(
+                resource_type=schema_name,
+                location=(
+                    self.config.server.public_baseurl
+                    + SCIM_PREFIX
+                    + "/Schemas/"
+                    + schema_id
+                ),
+            )
+
+
+class SchemaListServlet(BaseSchemaServlet):
     PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/Schemas$")]
 
     async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
-        """Return the list of schemas provided by the synapse SCIM implementation.
+        """Return the list of schemas provided by the synapse SCIM implementation."""
 
-        Could be automated when this is implemented:
-        https://github.com/yaal-coop/scim2-models/issues/7"""
-
-        start_index, count = self.parse_pagination_params(request)
-        resources = [
-            self.absolute_meta_location(SCHEMA_SERVICE_PROVIDER_CONFIG),
-            self.absolute_meta_location(SCHEMA_RESOURCE_TYPE),
-            self.absolute_meta_location(SCHEMA_SCHEMA),
-            self.absolute_meta_location(SCHEMA_USER),
-        ]
-        return HTTPStatus.OK, self.make_list_response_payload(
-            resources, start_index=start_index, count=count
+        req = self.parse_search_request(request)
+        stop_index = req.start_index + req.count if req.count else None
+        resources = list(self.schemas.values())
+        response = ListResponse.of(Schema)(
+            total_results=len(resources),
+            items_per_page=req.count or len(resources),
+            start_index=req.start_index,
+            resources=resources[req.start_index - 1 : stop_index],
+        )
+        return HTTPStatus.OK, response.model_dump(
+            scim_ctx=Context.RESOURCE_QUERY_RESPONSE
         )
 
 
-class SchemaServlet(SCIMServlet):
+class SchemaServlet(BaseSchemaServlet):
     PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/Schemas/(?P<schema_id>[^/]*)$")]
 
     async def on_GET(
         self, request: SynapseRequest, schema_id: str
     ) -> Tuple[int, JsonDict]:
-        schemas = {
-            "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig": SCHEMA_SERVICE_PROVIDER_CONFIG,
-            "urn:ietf:params:scim:schemas:core:2.0:ResourceType": SCHEMA_RESOURCE_TYPE,
-            "urn:ietf:params:scim:schemas:core:2.0:Schema": SCHEMA_SCHEMA,
-            "urn:ietf:params:scim:schemas:core:2.0:User": SCHEMA_USER,
-        }
+        """Given an id, return a schema provided by the synapse SCIM implementation."""
+
         try:
-            return HTTPStatus.OK, self.absolute_meta_location(schemas[schema_id])
+            return HTTPStatus.OK, self.schemas[schema_id].model_dump(
+                scim_ctx=Context.RESOURCE_QUERY_RESPONSE
+            )
         except KeyError:
             return self.make_error_response(HTTPStatus.NOT_FOUND, "Object not found")
 
 
-class ResourceTypeListServlet(SCIMServlet):
-    PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/ResourceTypes$")]
+class BaseResourceTypeServlet(SCIMServlet):
+    resource_type: ResourceType
 
-    async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
-        start_index, count = self.parse_pagination_params(request)
-        resources = [self.absolute_meta_location(RESOURCE_TYPE_USER)]
-        return HTTPStatus.OK, self.make_list_response_payload(
-            resources, start_index=start_index, count=count
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.resource_type = ResourceType(
+            id="User",
+            name="User",
+            endpoint="/Users",
+            description="User accounts",
+            # TODO: make this value dynamical
+            schema="urn:ietf:params:scim:schemas:core:2.0:User",
+            meta=Meta(
+                resource_type="ResourceType",
+                location=(
+                    self.config.server.public_baseurl
+                    + SCIM_PREFIX
+                    + "/ResourceTypes/User"
+                ),
+            ),
         )
 
 
-class ResourceTypeServlet(SCIMServlet):
+class ResourceTypeListServlet(BaseResourceTypeServlet):
+    PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/ResourceTypes$")]
+
+    async def on_GET(self, request: SynapseRequest) -> Tuple[int, JsonDict]:
+        req = self.parse_search_request(request)
+        stop_index = req.start_index + req.count if req.count else None
+        resources = [
+            self.resource_type.model_dump(scim_ctx=Context.RESOURCE_QUERY_RESPONSE)
+        ]
+        response = ListResponse.of(ResourceType)(
+            total_results=len(resources),
+            items_per_page=req.count or len(resources),
+            start_index=req.start_index,
+            resources=resources[req.start_index - 1 : stop_index],
+        )
+        return HTTPStatus.OK, response.model_dump(
+            scim_ctx=Context.RESOURCE_QUERY_RESPONSE
+        )
+
+
+class ResourceTypeServlet(BaseResourceTypeServlet):
     PATTERNS = [re.compile(f"^/{SCIM_PREFIX}/ResourceTypes/(?P<resource_type>[^/]*)$")]
 
     async def on_GET(
         self, request: SynapseRequest, resource_type: str
     ) -> Tuple[int, JsonDict]:
         resource_types = {
-            "User": RESOURCE_TYPE_USER,
+            "User": self.resource_type.model_dump(
+                scim_ctx=Context.RESOURCE_QUERY_RESPONSE
+            ),
         }
+
         try:
-            return HTTPStatus.OK, self.absolute_meta_location(
-                resource_types[resource_type]
-            )
+            return HTTPStatus.OK, resource_types[resource_type]
         except KeyError:
             return self.make_error_response(HTTPStatus.NOT_FOUND, "Object not found")
