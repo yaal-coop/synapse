@@ -105,23 +105,6 @@ class SCIMServlet(RestServlet):
 
         self.default_nb_items_per_page = 100
 
-    def absolute_meta_location(self, payload: JsonDict) -> JsonDict:
-        prefix = self.config.server.public_baseurl + SCIM_PREFIX
-        if not payload["meta"]["location"].startswith(prefix):
-            payload["meta"]["location"] = prefix + payload["meta"]["location"]
-        return payload
-
-    def make_list_response_payload(
-        self, items, start_index=1, count=None, total_results=None
-    ):
-        return {
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-            "totalResults": total_results or len(items),
-            "itemsPerPage": count or len(items),
-            "startIndex": start_index,
-            "Resources": items,
-        }
-
     def make_error_response(self, status, message):
         return status, Error(
             status=status.value if isinstance(status, HTTPStatus) else status,
@@ -486,7 +469,6 @@ class BaseResourceTypeServlet(SCIMServlet):
             name="User",
             endpoint="/Users",
             description="User accounts",
-            # TODO: make this value dynamical
             schema="urn:ietf:params:scim:schemas:core:2.0:User",
             meta=Meta(
                 resource_type="ResourceType",
