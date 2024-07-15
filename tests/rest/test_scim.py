@@ -465,7 +465,7 @@ class SCIMMetadataTestCase(unittest.HomeserverTestCase):
 
     def test_get_schema(self) -> None:
         """
-        Read the /Schemas endpoint
+        Read the /Schemas/<schema-id> endpoint
         """
         for schema in self.schemas:
             channel = self.make_request(
