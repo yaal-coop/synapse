@@ -2500,13 +2500,13 @@ scim2-models = ">=0.1.5,<0.2.0"
 
 [[package]]
 name = "scim2-models"
-version = "0.1.12"
+version = "0.1.13"
 description = "SCIM2 models serialization and validation with pydantic"
 optional = false
 python-versions = "<4.0,>=3.9"
 files = [
-    {file = "scim2_models-0.1.12-py3-none-any.whl", hash = "sha256:ec3a1d16a52dfd68af2986c80fba940264f23465d90a9b6c15f5ce96cce541dc"},
-    {file = "scim2_models-0.1.12.tar.gz", hash = "sha256:837ad95dc5efa184091052625e69e73326be9593ae7d22fe869b723427810cc9"},
+    {file = "scim2_models-0.1.13-py3-none-any.whl", hash = "sha256:81b31355a9211c2c062265e7e5780ef6b50767a3a0c83592998f2b2e6fde442d"},
+    {file = "scim2_models-0.1.13.tar.gz", hash = "sha256:cbf231b1ccbe730f74b934766ba7474a596c97dfa97aa4f4910cd99b12a74626"},
 ]
 
 [package.dependencies]
@@ -3370,4 +3370,4 @@ user-search = ["pyicu"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.8.0"
-content-hash = "1957f8a2c3e4e31b3ca30b78c778cde074fc66cdca40f630aef3e6a1413c2a7a"
+content-hash = "51fbd1594937b2144a0228e94e398065198b7d002c36d9fa39129f05b5405cb6"
